@@ -10,6 +10,10 @@ import sys
 import MySQLdb
 
 
+MYSQL_HOST_NOT_ALLOWED = 1130
+MYSQL_UNKOWN_HOST = 2005
+
+
 class MySQLServerConnectException(Exception):
     pass
 
@@ -43,7 +47,7 @@ class MySQLServer():
                     cursorclass=MySQLdb.cursors.DictCursor)
         
         except Exception, e:
-            raise MySQLServerConnectException
+            raise MySQLServerConnectException(e)
 
         self._global_variables()
         self._global_status()
@@ -332,10 +336,24 @@ def main():
         server = MySQLServer(db_params)
         sys.exit(server.status())
 
-    except MySQLServerConnectException:
+    except MySQLServerConnectException, e:
         msg = "Database Connection failed"
-        print("Critical {}".format(msg))
-        sys.exit(MySQLServer.state_critical)
+        mysql_err_code = e.args[0][0]
+
+        if mysql_err_code == MYSQL_HOST_NOT_ALLOWED:
+            msg = "User is not allowed to connect"
+            print("Warning - {}".format(msg))
+            sys.exit(MySQLServer.state_warning)
+
+        elif mysql_err_code == MYSQL_UNKOWN_HOST:
+            msg = "No service is listening on {}:{}".format(args.host,
+                                                            args.port)
+            print("Unknown - {}".format(msg))
+            sys.exit(MySQLServer.state_unknown)
+
+        else:
+            print("Critical - {}".format(msg))
+            sys.exit(MySQLServer.state_critical)
 
 
 if __name__ == '__main__':
