@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = "Patrick Kummutat"
-__version__ = "0.2"
+__version__ = "0.3"
 __date__ = "15/11/2018"
 
 import argparse
@@ -143,7 +143,7 @@ class MySQLServer():
             self._mysql['variables'].update({row['Variable_name']:row['Value']})
 
 
-    def check_threads(self, warning=60, critical=95):
+    def check_threads(self, warning, critical):
         """
         calculate thread usage in percentage
 
@@ -177,7 +177,7 @@ class MySQLServer():
             self._messages['ok'].append(msg)
         
 
-    def check_connections(self, warning=85, critical=95):
+    def check_connections(self, warning, critical):
         """
         calculate connection usage in percentage
 
@@ -214,7 +214,7 @@ class MySQLServer():
             self._messages['ok'].append(msg)
         
 
-    def check_replication(self, warning=600, critical=1800):
+    def check_replication(self, warning, critical):
         """
         examine the replication status of a slave
 
@@ -281,18 +281,19 @@ class MySQLServer():
                 self._messages['ok'].append(msg)
 
 
-    def status(self):
+    def status(self, check):
         """
         calls all check functions and generate
         the status output
-
+        
+        @param check: threshold for each check command
         @returns: the exit code for icinga
         @returntype: int
         """
 
-        self.check_threads()
-        self.check_connections()
-        self.check_replication()
+        self.check_threads(**check['check_threads'])
+        self.check_connections(**check['check_connections'])
+        self.check_replication(**check['check_replication'])
         
         if self._state == MySQLServer.state_critical:
             self._print_status('critical')
@@ -318,23 +319,71 @@ def parse_cmd_args():
     parser.add_argument('-H', '--host', required=True)
     parser.add_argument('-U', '--user')
     parser.add_argument('-p','--passwd')
-    parser.add_argument('--read-default-file', default='~/.my.cnf')
+    parser.add_argument('--defaults-file', 
+                        dest='read_default_file', 
+                        default='~/.my.cnf')
+
     parser.add_argument('--db', default='mysql')
     parser.add_argument('-P', '--port', type=int, default=3306)
+
+    group = parser.add_argument_group('check')
+    group.add_argument('--check-threads', default='60:95',
+            help='warning and critical threshold '\
+                 'in percent for concurrency thread usage (float|int:float|int)')
+
+    group.add_argument('--check-replication', default='600:1800',
+            help='warning and critical threshold '\
+                 'in seconds for replication (float|int:float|int)')
+
+    group.add_argument('--check-connections', default='85:95',
+            help='warning and critical threshold '\
+                 'in percent for connection usage (float|int:float|int)')
+
     args = parser.parse_args()
 
     return args
 
 
+def validate_threshold_args(args):
+    """
+    validates threshold parameters and
+    checks that warning and critical values are provided and
+    separated by a colon
+
+    @returns: dict with critical and warning value for each check type
+    @returntype: dict
+    """
+
+    thresholds = dict(check_threads=dict(),
+                      check_replication=dict(),
+                      check_connections=dict())
+
+    msg = "Threshold validation failed for --{}"
+
+    for check in ((arg for arg in vars(args) if arg.startswith('check'))):
+        check_arg = getattr(args, check).split(':')
+
+        if len(check_arg) == 2:
+            thresholds[check] = dict(warning=float(check_arg[0]),
+                                     critical=float(check_arg[1]))
+        else:
+            print(msg.format(check.replace('_','-')))
+            sys.exit(-1)
+
+    return thresholds
+
+
 def main():
 
     args = parse_cmd_args()
-    db_params = dict(filter(lambda item: item[1] is not None,
+    check_params = validate_threshold_args(args)
+    db_params = dict(filter(lambda item: item[1] is not None and \
+                                         not item[0].startswith('check'),
                             vars(args).items()))
     
     try:
         server = MySQLServer(db_params)
-        sys.exit(server.status())
+        sys.exit(server.status(check_params))
 
     except MySQLServerConnectException, e:
         msg = "Database Connection failed"
