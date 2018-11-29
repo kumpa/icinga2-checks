@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = "Patrick Kummutat"
-__version__ = "0.3"
+__version__ = "0.4"
 __date__ = "15/11/2018"
 
 import argparse
@@ -121,6 +121,19 @@ class MySQLServer():
         if len(status) > 0:
             self._mysql['slave'] = status[0]
             self._is_slave = True
+
+
+    def _slave_hosts(self):
+        """
+        gather slave host count
+
+        @returncode: connected slaves
+        @returntype: int
+        """
+
+        slaves = self._run_query("SHOW SLAVE HOSTS")
+
+        return len(slaves)
 
 
     def _global_status(self):
@@ -281,6 +294,41 @@ class MySQLServer():
                 self._messages['ok'].append(msg)
 
 
+    def check_slave_count(self, warning, critical):
+        """
+        check connected slave hosts
+
+        @param warning: threshold in seconds
+        @type warning: int or float
+        @param critical: threshold in seconds
+        @type critical: int or float
+        """
+
+        if warning == -1:
+            return
+
+        if critical == -1:
+            return
+
+        slaves = self._slave_hosts()
+
+        self._perf_data.append("slaves_registered={};{};{}".format(slaves,
+                                                                   warning,
+                                                                   critical))
+        msg = "Slave registered {}".format(slaves)
+
+        if slaves <= critical:
+            self._messages['critical'].append(msg)
+            self._set_state(MySQLServer.state_critical)
+
+        elif slaves <= warning:
+            self._messages['warning'].append(msg)
+            self._set_state(MySQLServer.state_warning)
+
+        else:
+            self._messages['ok'].append(msg)
+
+
     def status(self, check):
         """
         calls all check functions and generate
@@ -294,6 +342,7 @@ class MySQLServer():
         self.check_threads(**check['check_threads'])
         self.check_connections(**check['check_connections'])
         self.check_replication(**check['check_replication'])
+        self.check_slave_count(**check['check_slave_count'])
         
         if self._state == MySQLServer.state_critical:
             self._print_status('critical')
@@ -338,6 +387,10 @@ def parse_cmd_args():
     group.add_argument('--check-connections', default='85:95',
             help='warning and critical threshold '\
                  'in percent for connection usage (float|int:float|int)')
+
+    group.add_argument('--check-slave-count', default='-1:-1',
+            help='warning and critical count' \
+                 'of registered slave hosts  (float|int:float|int)')
 
     args = parser.parse_args()
 
