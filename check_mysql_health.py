@@ -312,10 +312,10 @@ class MySQLServer():
 
         slaves = self._slave_hosts()
 
-        self._perf_data.append("slaves_registered={};{};{}".format(slaves,
+        self._perf_data.append("slaves_connected={};{};{}".format(slaves,
                                                                    warning,
                                                                    critical))
-        msg = "Slave registered {}".format(slaves)
+        msg = "Slave connected {}".format(slaves)
 
         if slaves <= critical:
             self._messages['critical'].append(msg)
@@ -390,7 +390,7 @@ def parse_cmd_args():
 
     group.add_argument('--check-slave-count', default='-1:-1',
             help='warning and critical count' \
-                 'of registered slave hosts  (float|int:float|int)')
+                 'of connected slave hosts  (float|int:float|int)')
 
     args = parser.parse_args()
 
