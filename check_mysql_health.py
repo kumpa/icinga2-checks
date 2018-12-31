@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = "Patrick Kummutat"
-__version__ = "0.4"
+__version__ = "0.5"
 __date__ = "15/11/2018"
 
 import argparse
@@ -12,6 +12,8 @@ import MySQLdb
 
 MYSQL_HOST_NOT_ALLOWED = 1130
 MYSQL_UNKOWN_HOST = 2005
+MYSQL_RESULT_FETCH_ALL = "ALL"
+MYSQL_RESULT_FETCH_ONE = "ONE"
 
 
 class MySQLServerConnectException(Exception):
@@ -65,6 +67,7 @@ class MySQLServer():
         @param state:
         @type: int
         """
+
         if state >= self._state:
             self._state = state
 
@@ -73,7 +76,7 @@ class MySQLServer():
         raise Exception
 
 
-    def _run_query(self, sql, fetch='all'):
+    def _run_query(self, sql, fetch=MYSQL_RESULT_FETCH_ALL):
         """
         @param sql: any valid sql to execute
         @type: string
@@ -84,7 +87,7 @@ class MySQLServer():
 
         self._cursor.execute(sql)
 
-        if fetch == 'one':
+        if fetch == MYSQL_RESULT_FETCH_ONE:
             return self._cursor.fetchone()
 
         else:
@@ -171,7 +174,7 @@ class MySQLServer():
 
         user = self._run_query("SELECT COUNT(*) AS connected_users " \
                                "FROM information_schema.processlist",
-                               "one")
+                               MYSQL_RESULT_FETCH_ONE)
         user_connected = user['connected_users']
 
         perf_data = "connected_users={}:{}:{}".format(user_connected,
@@ -201,6 +204,7 @@ class MySQLServer():
         @param critical: threshold in percentage
         @type warning: int or float
         """
+
         threads_running = float(self._mysql['status'].get('Threads_running', 0))
         thread_concurrency = float(self._mysql['variables'].get('innodb_thread_concurrency'))
         thread_usage = round((threads_running / thread_concurrency) * 100.0, 2)
@@ -310,7 +314,6 @@ class MySQLServer():
                 self._messages['warning'].append(msg)
                 self._set_state(MySQLServer.state_warning)
 
-
             msg = "Replication "\
                   "Master {}:{} "\
                   "Slave lag {}s/{}B".format(master_host,
@@ -340,10 +343,7 @@ class MySQLServer():
         @type critical: int or float
         """
 
-        if warning == -1:
-            return
-
-        if critical == -1:
+        if warning == -1 or critical == -1:
             return
 
         slaves = self._slave_hosts()
@@ -416,6 +416,7 @@ def parse_cmd_args():
     group.add_argument('--check-users', default='-1:-1',
             help='warning and critical threshold '\
                  'for connected users (float|int:float|int)')
+
     group.add_argument('--check-threads', default='60:95',
             help='warning and critical threshold '\
                  'in percent for concurrency thread usage (float|int:float|int)')
