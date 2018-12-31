@@ -104,8 +104,13 @@ class MySQLServer():
         @type: string
         """
 
-        msg =  "{} Database Health - {}"
-        print(msg.format(level.capitalize(),
+        msg = "Ok Database Health"
+        if level == 'ok':
+            print(msg)
+
+        else:
+            msg =  "{} Database Health - {}"
+            print(msg.format(level.capitalize(),
                          self._messages[level].pop(0)))
 
         for msg in self._messages[level.lower()]:
