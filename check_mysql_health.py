@@ -156,6 +156,42 @@ class MySQLServer():
             self._mysql['variables'].update({row['Variable_name']:row['Value']})
 
 
+    def check_users(self, warning, critical):
+        """
+        checks count of connected database users
+
+        @param warning: threshold for warning
+        @type warning: int or float
+        @param critical: threshold for critical
+        @type warning: int or float
+        """
+
+        if warning == -1 or critical == -1:
+            return
+
+        user = self._run_query("SELECT COUNT(*) AS connected_users " \
+                               "FROM information_schema.processlist",
+                               "one")
+        user_connected = user['connected_users']
+
+        perf_data = "connected_users={}:{}:{}".format(user_connected,
+                                                      warning,
+                                                      critical)
+        self._perf_data.append(perf_data)
+        msg = "Connected users {}".format(user_connected)
+
+        if user_connected <= critical:
+            self._messages['critical'].append(msg)
+            self._set_state(MySQLServer.state_critical)
+
+        elif user_connected <= warning:
+            self._messages['warning'].append(msg)
+            self._set_state(MySQLServer.state_warning)
+
+        else:
+            self._messages['ok'].append(msg)
+
+
     def check_threads(self, warning, critical):
         """
         calculate thread usage in percentage
@@ -343,6 +379,7 @@ class MySQLServer():
         self.check_connections(**check['check_connections'])
         self.check_replication(**check['check_replication'])
         self.check_slave_count(**check['check_slave_count'])
+        self.check_users(**check['check_users'])
         
         if self._state == MySQLServer.state_critical:
             self._print_status('critical')
@@ -376,6 +413,9 @@ def parse_cmd_args():
     parser.add_argument('-P', '--port', type=int, default=3306)
 
     group = parser.add_argument_group('check')
+    group.add_argument('--check-users', default='-1:-1',
+            help='warning and critical threshold '\
+                 'for connected users (float|int:float|int)')
     group.add_argument('--check-threads', default='60:95',
             help='warning and critical threshold '\
                  'in percent for concurrency thread usage (float|int:float|int)')
