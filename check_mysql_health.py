@@ -212,6 +212,12 @@ class MySQLServer():
 
         threads_running = float(self._mysql['status'].get('Threads_running', 0))
         thread_concurrency = float(self._mysql['variables'].get('innodb_thread_concurrency'))
+
+        # Skip thread checking when concurrency is set unlimited
+        unlimited = 0
+        if thread_concurrency == unlimited:
+            return
+
         thread_usage = round((threads_running / thread_concurrency) * 100.0, 2)
 
         perf_data = "thread_usage={}%;{};{}".format(thread_usage, warning, critical)
