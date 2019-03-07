@@ -449,7 +449,7 @@ def parse_cmd_args():
     return args
 
 
-def validate_threshold_args(args):
+def parse_check_args(args):
     """
     validates threshold parameters and
     checks that warning and critical values are provided and
@@ -478,17 +478,39 @@ def validate_threshold_args(args):
     return thresholds
 
 
+def parse_connection_args(args):
+    """
+    extract all mysql connection params from args
+    which don't have None values set and returns those
+    
+    @returns: dict with mysql connection params
+    @returntype: dict
+    """
+
+    valid_connection_params = ['host',
+                               'user',
+                               'passwd',
+                               'read_default_file',
+                               'db',
+                               'port']
+    connection_args = {}
+
+    for arg in vars(args):
+        if arg in valid_connection_params:
+           value = getattr(args, arg)
+           if value:
+              connection_args.update({arg:value})
+
+    return connection_args
+
+
 def main():
 
     args = parse_cmd_args()
-    check_params = validate_threshold_args(args)
-    db_params = dict(filter(lambda item: item[1] is not None and \
-                                         not item[0].startswith('check'),
-                            vars(args).items()))
     
     try:
-        server = MySQLServer(db_params)
-        sys.exit(server.status(check_params))
+        server = MySQLServer(parse_connection_args(args))
+        sys.exit(server.status(parse_check_args(args)))
 
     except MySQLServerConnectException, e:
         msg = "Database Connection failed"
