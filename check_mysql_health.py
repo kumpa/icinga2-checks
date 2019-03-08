@@ -33,6 +33,7 @@ class MySQLServer():
         @raise MySQLServerConnectException: When mysql connect fails 
         """
 
+        self._kwargs = kwargs
         self._state = MySQLServer.state_ok
         self._messages = dict(ok=list(),
                               warning=list(),
@@ -42,6 +43,7 @@ class MySQLServer():
         self._mysql = dict()
         self._connection = None
         self._is_slave = False
+        self._master = None
 
         try:
             self._connection = MySQLdb.connect(**kwargs)
@@ -142,6 +144,28 @@ class MySQLServer():
         slaves = self._run_query("SHOW SLAVE HOSTS")
 
         return len(slaves)
+
+
+    def _master_status(self):
+        """
+        gather show master status output
+
+        @returns: file, position, binlog_do_db and binlog_ignore_db
+        @returntype: dict 
+        """
+
+        return self._run_query("SHOW MASTER STATUS", MYSQL_RESULT_FETCH_ONE)
+
+
+    def _master_logs(self):
+        """
+        gather show master logs output
+
+        @returns: log_name and file_size
+        @returntype: list of dicts
+        """
+
+        return self._run_query("SHOW MASTER LOGS")
 
 
     def _global_status(self):
@@ -278,6 +302,89 @@ class MySQLServer():
             self._messages['ok'].append(msg)
         
 
+    def _connect_master(self):
+        """
+        open a connection to master host
+        using same credentials as for checking host
+        just replacing host and port from slave status
+        """
+      
+        # Copy connection args
+        master_connection = self._kwargs
+        # Replacing host and port with values from slave status
+        master_connection['host'] = self._mysql['slave'].get('Master_Host')
+        master_connection['port'] = self._mysql['slave'].get('Master_Port')
+      
+        try:
+            self._master = MySQLServer(master_connection)
+        except Exception, e:
+            # failed open connection on master server
+            pass
+
+
+    def _diff_binlog_master_slave(self, slave_status_only=False):
+        """
+        calculate byte offset between master and slave 
+
+        @returns: bytes offset between master and slave
+        @returntype: int
+        """
+
+        master_log_ahead = 0
+        lag_bytes = 0
+        slave_logfile_matched = False
+        slave_relay_master_log_file = self._mysql['slave'].get('Relay_Master_Log_File')
+        slave_master_log_file = self._mysql['slave'].get('Master_Log_File')
+        slave_exec_master_log_pos = self._mysql['slave'].get('Exec_Master_Log_Pos')
+
+        if not slave_status_only:
+            for log in self._master._master_logs():
+    
+               if log.get('Log_name') == slave_relay_master_log_file or \
+                  slave_logfile_matched:
+
+                  slave_logfile_matched = True
+                  master_log_ahead = master_log_ahead + int(log.get('File_size'))
+
+            lag_bytes = master_log_ahead - slave_exec_master_log_pos
+
+        else:
+            # Fallback method to estimate the byte lag
+            # Assume the slave has the same setting for max_binlog_size as master
+            max_binlog_size = self._mysql['variables'].get('max_binlog_size')
+            # Extract number from binlog file names
+            master_logfile_nr = slave_master_log_file.split('.')[1] 
+            slave_logfile_nr = slave_relay_master_log_file.split('.')[1]
+            # Calculate offset based on current logfile applied on slave
+            logfile_nr_offset = master_logfile_nr - slave_logfile_nr
+
+            if logfile_nr_offset > 0:
+                lag_bytes = logfile_nr_offset * max_binlog_size - (slave_exec_master_log_pos)
+
+        return lag_bytes
+
+
+    def _get_replication_lag(self):
+        """
+        try connecting to master to calculate byte offset from slave
+
+        @returns: byte offset
+        @returntype: int
+        """
+
+        lag_bytes = 0
+
+        self._connect_master()
+
+        # Use data from master to calculate lag instead of slave status output
+        if self._master:
+            lag_bytes = self._diff_binlog_master_slave()
+        else:
+            lag_bytes = self._diff_binlog_master_slave(slave_status_only=True)
+
+        return lag_bytes
+            
+
     def check_replication(self, warning, critical):
         """
         examine the replication status of a slave
@@ -290,23 +397,24 @@ class MySQLServer():
 
         if self._is_slave:
             read_only = self._mysql['variables'].get('read_only')
-            seconds_behind = self._mysql['slave'].get('Seconds_Behind_Master', 0)
-            large_lag = 999999
-            read_master_pos = self._mysql['slave'].get('Read_Master_Log_Pos', 0)
-            exec_master_pos = self._mysql['slave'].get('Exec_Master_Log_Pos', 0)
-            slave_sql = self._mysql['slave'].get('Slave_SQL_Running', 'No')
-            slave_io = self._mysql['slave'].get('Slave_IO_Running', 'No')
+            lag_seconds = self._mysql['slave'].get('Seconds_Behind_Master', 0)
+            slave_sql_thread = self._mysql['slave'].get('Slave_SQL_Running', 'No')
+            slave_io_thread = self._mysql['slave'].get('Slave_IO_Running', 'No')
             slave_err = self._mysql['slave'].get('Last_Errno', '')
             master_host = self._mysql['slave'].get('Master_Host')
             master_port = self._mysql['slave'].get('Master_Port')
 
-            lag_seconds = int(seconds_behind if seconds_behind >= 0 else large_lag)
-            lag_bytes = read_master_pos - exec_master_pos
-            self._perf_data.append("replicaton_seconds={}s;{};{}".format(seconds_behind,
-                                                                         warning,
-                                                                         critical))
+            lag_bytes = self._get_replication_lag()
+            self._perf_data.append("replication_lag_bytes={}b;{};{}".format(lag_bytes, 0,0))
 
-            if slave_sql != 'Yes':
+            if not lag_seconds:
+                lag_seconds = -1
+
+            self._perf_data.append("replication_lag_seconds={}s;{};{}".format(lag_seconds,
+                                                                              warning,
+                                                                              critical))
+
+            if slave_sql_thread != 'Yes':
                 msg = "Replication SQL Thread is down"
                 self._messages['critical'].append(msg)
                 self._set_state(MySQLServer.state_critical)
@@ -315,7 +423,7 @@ class MySQLServer():
                     msg = "Last Error: {}".format(slave_err)
                     self._messages['critical'].append(msg)
 
-            if slave_io != 'Yes':
+            if slave_io_thread != 'Yes':
                 msg = "Replication IO Thread is down"
                 self._messages['critical'].append(msg)
                 self._set_state(MySQLServer.state_critical)
