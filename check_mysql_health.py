@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = "Patrick Kummutat"
-__version__ = "0.5"
+__version__ = "0.6"
 __date__ = "15/11/2018"
 
 import argparse
