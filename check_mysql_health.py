@@ -12,6 +12,7 @@ import MySQLdb
 
 MYSQL_HOST_NOT_ALLOWED = 1130
 MYSQL_UNKOWN_HOST = 2005
+MYSQL_ACCESS_DENIED = 1045
 MYSQL_RESULT_FETCH_ALL = "ALL"
 MYSQL_RESULT_FETCH_ONE = "ONE"
 
@@ -212,11 +213,11 @@ class MySQLServer():
         self._perf_data.append(perf_data)
         msg = "Connected users {}".format(user_connected)
 
-        if user_connected <= critical:
+        if user_connected >= critical:
             self._messages['critical'].append(msg)
             self._set_state(MySQLServer.state_critical)
 
-        elif user_connected <= warning:
+        elif user_connected >= warning:
             self._messages['warning'].append(msg)
             self._set_state(MySQLServer.state_warning)
 
@@ -385,7 +386,7 @@ class MySQLServer():
         return lag_bytes
             
 
-    def check_replication(self, warning, critical):
+    def check_replication(self, threshold_seconds, threshold_bytes):
         """
         examine the replication status of a slave
 
@@ -405,14 +406,18 @@ class MySQLServer():
             master_port = self._mysql['slave'].get('Master_Port')
 
             lag_bytes = self._get_replication_lag()
-            self._perf_data.append("replication_lag_bytes={}b;{};{}".format(lag_bytes, 0,0))
+            perf_msg = "replication_lag_bytes={}b;{};{}"
+            self._perf_data.append(perf_msg.format(lag_bytes,
+                                                   threshold_bytes.get('warning'),
+                                                   threshold_bytes.get('critical')))
 
-            if not lag_seconds:
+            if lag_seconds is None:
                 lag_seconds = -1
 
-            self._perf_data.append("replication_lag_seconds={}s;{};{}".format(lag_seconds,
-                                                                              warning,
-                                                                              critical))
+            perf_msg = "replication_lag_seconds={}s;{};{}"
+            self._perf_data.append(perf_msg.format(lag_seconds,
+                                                   threshold_seconds.get('warning'),
+                                                   threshold_seconds.get('critical')))
 
             if slave_sql_thread != 'Yes':
                 msg = "Replication SQL Thread is down"
@@ -440,11 +445,22 @@ class MySQLServer():
                                              lag_seconds,
                                              lag_bytes)
 
-            if lag_seconds >= critical:
+            if lag_bytes >= threshold_bytes.get('critical'):
                 self._messages['critical'].append(msg)
                 self._set_state(MySQLServer.state_critical)
 
-            elif lag_seconds >= warning:
+            elif lag_bytes >= threshold_bytes.get('warning'):
+                self._messages['warning'].append(msg)
+                self._set_state(MySQLServer.state_warning)
+
+            else:
+                pass
+                   
+            if lag_seconds >= threshold_seconds.get('critical'):
+                self._messages['critical'].append(msg)
+                self._set_state(MySQLServer.state_critical)
+
+            elif lag_seconds >= threshold_seconds.get('warning'):
                 self._messages['warning'].append(msg)
                 self._set_state(MySQLServer.state_warning)
 
@@ -494,10 +510,17 @@ class MySQLServer():
         @returntype: int
         """
 
+
+        if check['check_replication']:
+            self.check_replication(check['replication_lag_seconds'],
+                                   check['replication_lag_bytes'])
+
         self.check_threads(**check['check_threads'])
+
         self.check_connections(**check['check_connections'])
-        self.check_replication(**check['check_replication'])
+
         self.check_slave_count(**check['check_slave_count'])
+
         self.check_users(**check['check_users'])
         
         if self._state == MySQLServer.state_critical:
@@ -526,7 +549,9 @@ def parse_cmd_args():
     parser.add_argument('-p','--passwd')
     parser.add_argument('--defaults-file', 
                         dest='read_default_file', 
-                        default='~/.my.cnf')
+                        default='~/.my.cnf',
+                        help='Full path to my.cnf'
+                       )
 
     parser.add_argument('--db', default='mysql')
     parser.add_argument('-P', '--port', type=int, default=3306)
@@ -540,9 +565,16 @@ def parse_cmd_args():
             help='warning and critical threshold '\
                  'in percent for concurrency thread usage (float|int:float|int)')
 
-    group.add_argument('--check-replication', default='600:1800',
+    group.add_argument('--check-replication', action='store_true',
+            help='enable replication check')
+
+    group.add_argument('--replication-lag-seconds', default='600:1800',
             help='warning and critical threshold '\
                  'in seconds for replication (float|int:float|int)')
+
+    group.add_argument('--replication-lag-bytes', default='52428800:104857600',
+            help='warning and critical threshold '\
+                 'in bytes for replication (float|int:float|int)')
 
     group.add_argument('--check-connections', default='85:95',
             help='warning and critical threshold '\
@@ -557,33 +589,55 @@ def parse_cmd_args():
     return args
 
 
+def parse_threshold(args):
+    """
+    parses given thresholds for warning and critical,
+    values are separated by colon
+
+    @param args: warn and crit threshold
+    @type: string
+
+    @returns: warning and critical threshold
+    @returntype: dict
+    """
+
+    threshold = args.split(':')
+
+    if len(threshold) == 2:
+       return dict(warning=float(threshold[0]),
+                   critical=float(threshold[1]))
+
+    else:
+       print("Invalid threshold format. Use --check <warn>:<crit>")
+       sys.exit(-1)
+
+
 def parse_check_args(args):
     """
     validates threshold parameters and
     checks that warning and critical values are provided and
     separated by a colon
 
+    @param args: commandline arguments
+    @type: argparse.Namespace
+
     @returns: dict with critical and warning value for each check type
     @returntype: dict
     """
 
-    thresholds = dict(check_threads=dict(),
-                      check_replication=dict(),
-                      check_connections=dict())
+    threshold = {}
+ 
+    threshold['check_threads'] = parse_threshold(args.check_threads)
 
-    msg = "Threshold validation failed for --{}"
+    threshold['check_slave_count'] = parse_threshold(args.check_slave_count)
+    threshold['check_users'] = parse_threshold(args.check_users)
+    threshold['check_connections'] = parse_threshold(args.check_connections)
 
-    for check in ((arg for arg in vars(args) if arg.startswith('check'))):
-        check_arg = getattr(args, check).split(':')
-
-        if len(check_arg) == 2:
-            thresholds[check] = dict(warning=float(check_arg[0]),
-                                     critical=float(check_arg[1]))
-        else:
-            print(msg.format(check.replace('_','-')))
-            sys.exit(-1)
-
-    return thresholds
+    threshold['check_replication'] = args.check_replication
+    threshold['replication_lag_seconds'] = parse_threshold(args.replication_lag_seconds)
+    threshold['replication_lag_bytes'] = parse_threshold(args.replication_lag_bytes)
+        
+    return threshold
 
 
 def parse_connection_args(args):
@@ -591,10 +645,13 @@ def parse_connection_args(args):
     extract all mysql connection params from args
     which don't have None values set and returns those
     
+    @param args: commandline arguments
+    @type: argparse.Namespace
+
     @returns: dict with mysql connection params
     @returntype: dict
     """
-
+ 
     valid_connection_params = ['host',
                                'user',
                                'passwd',
