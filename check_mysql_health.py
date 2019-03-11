@@ -13,6 +13,7 @@ import MySQLdb
 MYSQL_HOST_NOT_ALLOWED = 1130
 MYSQL_UNKOWN_HOST = 2005
 MYSQL_ACCESS_DENIED = 1045
+MYSQL_REPLICATION_SLAVE_PRIV = 1227
 MYSQL_RESULT_FETCH_ALL = "ALL"
 MYSQL_RESULT_FETCH_ONE = "ONE"
 
@@ -138,7 +139,7 @@ class MySQLServer():
         """
         gather slave host count
 
-        @returncode: connected slaves
+        @returns: connected slaves
         @returntype: int
         """
 
@@ -327,6 +328,9 @@ class MySQLServer():
         """
         calculate byte offset between master and slave 
 
+        @param slave_status_only: indicate to useshow slave status is used
+        @type: bool
+
         @returns: bytes offset between master and slave
         @returntype: int
         """
@@ -390,10 +394,10 @@ class MySQLServer():
         """
         examine the replication status of a slave
 
-        @param warning: threshold in seconds
-        @type warning: int or float
-        @param critical: threshold in seconds
-        @type critical: int or float
+        @param threshold_seconds: warning and critical threshold in seconds
+        @type warning: dict
+        @param threshold_bytes: warning and critical threshold in bytes
+        @type critical: dict
         """
 
         if self._is_slave:
@@ -509,7 +513,6 @@ class MySQLServer():
         @returns: the exit code for icinga
         @returntype: int
         """
-
 
         if check['check_replication']:
             self.check_replication(check['replication_lag_seconds'],
@@ -681,7 +684,7 @@ def main():
         msg = "Database Connection failed"
         mysql_err_code = e.args[0][0]
 
-        if mysql_err_code == MYSQL_HOST_NOT_ALLOWED:
+        if mysql_err_code in (MYSQL_HOST_NOT_ALLOWED, MYSQL_ACCESS_DENIED):
             msg = "User is not allowed to connect"
             print("Warning - {}".format(msg))
             sys.exit(MySQLServer.state_warning)
@@ -691,6 +694,11 @@ def main():
                                                             args.port)
             print("Unknown - {}".format(msg))
             sys.exit(MySQLServer.state_unknown)
+
+        elif mysql_err_code == MYSQL_REPLICATION_SLAVE_PRIV:
+            msg = "User has unsufficient privileges (REPLICATION SLAVE)"
+            print(msg)
+            sys.exit(MySQLServer.state_warning)
 
         else:
             print("Critical - {}".format(msg))
