@@ -503,6 +503,55 @@ class MySQLServer():
         else:
             self._messages['ok'].append(msg)
 
+     
+    def check_user_connections(self, username, alert_level, warning, critical):
+        """
+        checks connected user filtered by username
+        per default alert level is set to warning and
+        critical threshold is ignored,
+        except when alert level is set to critical
+
+        @param username: filter connections by username
+        @type: str
+        @param alertlevel: notice level for alerts
+        @type: str
+        @param warning: threshold for warnings
+        @type: int
+        @param critical: threshold for criticals
+        @type: int
+        """
+
+        query = "SELECT COUNT(*) AS count " \
+                "FROM information_schema.processlist " \
+                "WHERE User NOT IN ('system user')"
+
+        if username:
+            query += " AND User = '{}'".format(username)
+
+        user = self._run_query(query, 
+                               MYSQL_RESULT_FETCH_ONE)
+
+        perf_msg = "user_connected={};{};{}"
+        self._perf_data.append(perf_msg.format(user.get('count'),
+                                               warning,
+                                               critical))
+
+        msg = "User {} has {} connections (w:{} c:{})".format(username,
+                                                              user.get('count'),
+                                                              warning,
+                                                              critical)
+
+        if user.get('count') <= critical and alert_level == 'critical':
+            self._messages['critical'].append(msg)
+            self._set_state(MySQLServer.state_critical)
+
+        elif user.get('count') <= warning:
+            self._messages['warning'].append(msg)
+            self._set_state(MySQLServer.state_warning)
+
+        else:
+            self._messages['ok'].append(msg)
+
 
     def status(self, check):
         """
@@ -519,6 +568,11 @@ class MySQLServer():
                                    check['replication_lag_bytes'])
 
         self.check_threads(**check['check_threads'])
+
+        if check['check_user_connections']:
+            self.check_user_connections(username=check['user_connections_filter'],
+                                        alert_level=check['user_connections_max_alertlevel'],
+                                        **check['user_connections'])
 
         self.check_connections(**check['check_connections'])
 
@@ -568,24 +622,41 @@ def parse_cmd_args():
             help='warning and critical threshold '\
                  'in percent for concurrency thread usage (float|int:float|int)')
 
-    group.add_argument('--check-replication', action='store_true',
-            help='enable replication check')
-
-    group.add_argument('--replication-lag-seconds', default='600:1800',
-            help='warning and critical threshold '\
-                 'in seconds for replication (float|int:float|int)')
-
-    group.add_argument('--replication-lag-bytes', default='52428800:104857600',
-            help='warning and critical threshold '\
-                 'in bytes for replication (float|int:float|int)')
-
     group.add_argument('--check-connections', default='85:95',
             help='warning and critical threshold '\
                  'in percent for connection usage (float|int:float|int)')
 
     group.add_argument('--check-slave-count', default='-1:-1',
-            help='warning and critical count' \
+            help='warning and critical count ' \
                  'of connected slave hosts  (float|int:float|int)')
+
+    group_repl = parser.add_argument_group('replication check')
+    group_repl.add_argument('--check-replication', action='store_true',
+            help='enable replication check')
+
+    group_repl.add_argument('--replication-lag-seconds', default='600:1800',
+            help='warning and critical threshold '\
+                 'in seconds for replication (float|int:float|int)')
+
+    group_repl.add_argument('--replication-lag-bytes', default='52428800:104857600',
+            help='warning and critical threshold '\
+                 'in bytes for replication (float|int:float|int)')
+
+    group_conn = parser.add_argument_group('user connection check')
+    group_conn.add_argument('--check-user-connections', action='store_true',
+            help='enable user connection check')
+
+    group_conn.add_argument('--user-connections', default='20:5',
+            help='warning and critical alert '\
+                 'for user connections equal or below thresholds '\
+                 '(default: warn=20, crit=5)')
+    
+    group_conn.add_argument('--user-connections-max-alertlevel', default='warning',
+            choices=['warning','critical'],
+            help='define max alert level for user connections check (default: warning)')
+
+    group_conn.add_argument('--user-connections-filter', default='root',
+            help='filter connections by username (default: root)')
 
     args = parser.parse_args()
 
@@ -617,9 +688,8 @@ def parse_threshold(args):
 
 def parse_check_args(args):
     """
-    validates threshold parameters and
-    checks that warning and critical values are provided and
-    separated by a colon
+    validates threshold parameters and store options in data dict
+    check format for warning and critical values are correct
 
     @param args: commandline arguments
     @type: argparse.Namespace
@@ -628,19 +698,24 @@ def parse_check_args(args):
     @returntype: dict
     """
 
-    threshold = {}
+    data = {}
  
-    threshold['check_threads'] = parse_threshold(args.check_threads)
+    data['check_threads'] = parse_threshold(args.check_threads)
 
-    threshold['check_slave_count'] = parse_threshold(args.check_slave_count)
-    threshold['check_users'] = parse_threshold(args.check_users)
-    threshold['check_connections'] = parse_threshold(args.check_connections)
+    data['check_slave_count'] = parse_threshold(args.check_slave_count)
+    data['check_users'] = parse_threshold(args.check_users)
+    data['check_connections'] = parse_threshold(args.check_connections)
 
-    threshold['check_replication'] = args.check_replication
-    threshold['replication_lag_seconds'] = parse_threshold(args.replication_lag_seconds)
-    threshold['replication_lag_bytes'] = parse_threshold(args.replication_lag_bytes)
-        
-    return threshold
+    data['check_user_connections'] = args.check_user_connections
+    data['user_connections'] = parse_threshold(args.user_connections)
+    data['user_connections_filter'] = args.user_connections_filter
+    data['user_connections_max_alertlevel'] = args.user_connections_max_alertlevel
+
+    data['check_replication'] = args.check_replication
+    data['replication_lag_seconds'] = parse_threshold(args.replication_lag_seconds)
+    data['replication_lag_bytes'] = parse_threshold(args.replication_lag_bytes)
+
+    return data
 
 
 def parse_connection_args(args):
