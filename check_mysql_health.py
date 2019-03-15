@@ -358,8 +358,8 @@ class MySQLServer():
             # Assume the slave has the same setting for max_binlog_size as master
             max_binlog_size = self._mysql['variables'].get('max_binlog_size')
             # Extract number from binlog file names
-            master_logfile_nr = slave_master_log_file.split('.')[1] 
-            slave_logfile_nr = slave_relay_master_log_file.split('.')[1]
+            master_logfile_nr = int(slave_master_log_file.split('.')[1])
+            slave_logfile_nr = int(slave_relay_master_log_file.split('.')[1])
             # Calculate offset based on current logfile applied on slave
             logfile_nr_offset = master_logfile_nr - slave_logfile_nr
 
