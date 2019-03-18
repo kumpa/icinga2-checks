@@ -553,6 +553,93 @@ class MySQLServer():
             self._messages['ok'].append(msg)
 
 
+    def check_liquibase(self, database, table, warning, critical):
+        """
+        checks held locks in liquibase for a certain time
+        and alerts if threshold is reached
+
+        @param database: database to lookup for lock table
+        @type: str
+        @param table: name of the lock table
+        @type: str
+        @param warning: warning threshold
+        @type: int
+        @param critical: critical threshold
+        @type: int
+        """
+
+        exclude_database = [
+                             "'mysql'",
+                             "'information_schema'",
+                             "'performance_schema'",
+                           ]
+
+        query = "SELECT TABLE_NAME, TABLE_SCHEMA FROM "\
+                "information_schema.TABLES WHERE "\
+                "TABLE_SCHEMA NOT IN ({}) AND "\
+                "TABLE_NAME = '{}'".format(
+                                           ','.join(exclude_database),
+                                           table
+                                          )
+
+        locks = []
+        lock_tables = []
+
+        if database:
+            query += " AND TABLE_SCHEMA = '{}'".format(database)
+
+        if table:
+            query += " AND TABLE_NAME = '{}'".format(table)
+
+        lock_tables = self._run_query(query, MYSQL_RESULT_FETCH_ALL)
+
+        if lock_tables:
+            for lock in lock_tables:
+                query = "SELECT LOCKGRANTED, LOCKEDBY, "\
+                        "(UNIX_TIMESTAMP()-UNIX_TIMESTAMP(LOCKGRANTED)) AS SECONDS "\
+                        "FROM `{}`.`{}` "\
+                        "WHERE LOCKGRANTED IS NOT NULL".format(
+                                                         lock.get('TABLE_SCHEMA'),
+                                                         lock.get('TABLE_NAME')
+                                                        )
+
+                result = self._run_query(query, MYSQL_RESULT_FETCH_ONE)
+
+                if result:
+                   db = { 'DATABASE': lock.get('TABLE_SCHEMA') }
+                   result.update(db)
+                   locks.append(result)
+
+        else:
+            msg = "Can't find any Liquibase lock table {}"
+            self._messages['warning'].append(msg.format(table))
+            self._set_state(MySQLServer.state_warning)
+
+        msg = "Liquibase lock held by {} in {} for {} seconds"
+        for lock in locks:
+            if lock.get('SECONDS') >= critical:
+                self._messages['critical'].append(msg.format(
+                                                             lock.get('LOCKEDBY'),
+                                                             lock.get('DATABASE'),
+                                                             lock.get('SECONDS')
+                                                            ))
+
+                self._set_state(MySQLServer.state_critical)
+
+            if lock.get('SECONDS') >= warning:
+                self._messages['warning'].append(msg.format(
+                                                            lock.get('LOCKEDBY'),
+                                                            lock.get('DATABASE'),
+                                                            lock.get('SECONDS')
+                                                           ))
+
+                self._set_state(MySQLServer.state_warning)
+
+        if self._state == MySQLServer.state_ok:
+            msg = "Liquibase locks"
+            self._messages['ok'].append(msg)
+
+
     def status(self, check):
         """
         calls all check functions and generate
@@ -579,6 +666,13 @@ class MySQLServer():
         self.check_slave_count(**check['check_slave_count'])
 
         self.check_users(**check['check_users'])
+
+        if check['check_liquibase']:
+            self.check_liquibase(
+                                  database=check['liquibase_database'],
+                                  table=check['liquibase_changeloglock_table'],
+                                  **check['liquibase_lock_seconds']
+                                )
         
         if self._state == MySQLServer.state_critical:
             self._print_status('critical')
@@ -658,6 +752,22 @@ def parse_cmd_args():
     group_conn.add_argument('--user-connections-filter', default='root',
             help='filter connections by username (default: root)')
 
+    group_liquibase = parser.add_argument_group('liquibase check')
+    group_liquibase.add_argument('--check-liquibase', action='store_true',
+            help='enable liquibase check')
+
+    group_liquibase.add_argument('--liquibase-lock-seconds', default='900:3600',
+            help='warning and critical threshold '\
+                 'lock held in seconds (default: warn:900 crit:3600)')
+
+    group_liquibase.add_argument('--liquibase-database',
+            help='database to check for databasechangeloglock table (default: all)')
+
+    group_liquibase.add_argument('--liquibase-changeloglock-table',
+            default='DATABASECHANGELOGLOCK',
+            help='table name for changeloglock table (default: DATABASECHANGELOGLOCK)')
+    
+
     args = parser.parse_args()
 
     return args
@@ -714,6 +824,11 @@ def parse_check_args(args):
     data['check_replication'] = args.check_replication
     data['replication_lag_seconds'] = parse_threshold(args.replication_lag_seconds)
     data['replication_lag_bytes'] = parse_threshold(args.replication_lag_bytes)
+
+    data['check_liquibase'] = args.check_liquibase
+    data['liquibase_lock_seconds'] = parse_threshold(args.liquibase_lock_seconds)
+    data['liquibase_database'] = args.liquibase_database
+    data['liquibase_changeloglock_table'] = args.liquibase_changeloglock_table
 
     return data
 
