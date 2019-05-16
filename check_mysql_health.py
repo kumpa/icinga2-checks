@@ -701,11 +701,23 @@ def parse_cmd_args():
     parser.add_argument('--defaults-file', 
                         dest='read_default_file', 
                         default='~/.my.cnf',
-                        help='Full path to my.cnf'
+                        help='Full path to my.cnf (default: ~/.my.cnf)'
                        )
 
-    parser.add_argument('--db', default='mysql')
-    parser.add_argument('-P', '--port', type=int, default=3306)
+    parser.add_argument('--db',
+                        default='information_schema',
+                        help='Database connect to (default: information_schema)'
+                       )
+    parser.add_argument('-P', '--port',
+                        type=int,
+                        default=3306,
+                        help='Database Port (default: 3306)'
+                       )
+    parser.add_argument('--connect-timeout',
+                        type=int,
+                        default=5,
+                        help='Database connection timeout in seconds (default: 5s)'
+                       )
 
     group = parser.add_argument_group('check')
     group.add_argument('--check-users', default='-1:-1',
@@ -845,12 +857,15 @@ def parse_connection_args(args):
     @returntype: dict
     """
  
-    valid_connection_params = ['host',
+    valid_connection_params = [
+                               'host',
                                'user',
                                'passwd',
                                'read_default_file',
                                'db',
-                               'port']
+                               'port',
+                               'connect_timeout'
+                              ]
     connection_args = {}
 
     for arg in vars(args):
