@@ -8,6 +8,7 @@ __date__ = "15/11/2018"
 import argparse
 import sys
 import MySQLdb
+from math import log
 
 
 MYSQL_HOST_NOT_ALLOWED = 1130
@@ -16,6 +17,12 @@ MYSQL_ACCESS_DENIED = 1045
 MYSQL_REPLICATION_SLAVE_PRIV = 1227
 MYSQL_RESULT_FETCH_ALL = "ALL"
 MYSQL_RESULT_FETCH_ONE = "ONE"
+
+
+def pretty_size(n, pow=0, b=1024, u='B', pre=[''] + [p+'i'for p in'KMGTPEZY']):
+    pow, n=min(int(log(max(n*b**pow,1), b)),len(pre)-1), n*b**pow
+
+    return "%%.%if %%s%%s"%abs(pow%(-pow-1))%(n/b**float(pow), pre[pow], u)
 
 
 class MySQLServerConnectException(Exception):
@@ -32,7 +39,7 @@ class MySQLServer():
         """
         @params kwargs: connection details for mysql
         @type: dict
-        @raise MySQLServerConnectException: When mysql connect fails 
+        @raise MySQLServerConnectException: When mysql connect fails
         """
 
         self._kwargs = kwargs
@@ -51,7 +58,7 @@ class MySQLServer():
             self._connection = MySQLdb.connect(**kwargs)
             self._cursor = self._connection.cursor(
                     cursorclass=MySQLdb.cursors.DictCursor)
-        
+
         except Exception, e:
             raise MySQLServerConnectException(e)
 
@@ -96,7 +103,7 @@ class MySQLServer():
 
         else:
             return self._cursor.fetchall()
-    
+
 
     def _print_status(self, level):
         """
@@ -153,7 +160,7 @@ class MySQLServer():
         gather show master status output
 
         @returns: file, position, binlog_do_db and binlog_ignore_db
-        @returntype: dict 
+        @returntype: dict
         """
 
         return self._run_query("SHOW MASTER STATUS", MYSQL_RESULT_FETCH_ONE)
@@ -190,45 +197,10 @@ class MySQLServer():
             self._mysql['variables'].update({row['Variable_name']:row['Value']})
 
 
-    def check_users(self, warning, critical):
-        """
-        checks count of connected database users
-
-        @param warning: threshold for warning
-        @type warning: int or float
-        @param critical: threshold for critical
-        @type warning: int or float
-        """
-
-        if warning == -1 or critical == -1:
-            return
-
-        user = self._run_query("SELECT COUNT(*) AS connected_users " \
-                               "FROM information_schema.processlist",
-                               MYSQL_RESULT_FETCH_ONE)
-        user_connected = user['connected_users']
-
-        perf_data = "connected_users={}:{}:{}".format(user_connected,
-                                                      warning,
-                                                      critical)
-        self._perf_data.append(perf_data)
-        msg = "Connected users {}".format(user_connected)
-
-        if user_connected >= critical:
-            self._messages['critical'].append(msg)
-            self._set_state(MySQLServer.state_critical)
-
-        elif user_connected >= warning:
-            self._messages['warning'].append(msg)
-            self._set_state(MySQLServer.state_warning)
-
-        else:
-            self._messages['ok'].append(msg)
-
-
-    def check_threads(self, warning, critical):
+    def check_threads_usage(self, warning, critical):
         """
         calculate thread usage in percentage
+        proportionally to the innodb_thread_concurrency setting
 
         @param warning: threshold in percentage
         @type warning: int or float
@@ -265,7 +237,7 @@ class MySQLServer():
 
         else:
             self._messages['ok'].append(msg)
-        
+
 
     def check_connections(self, warning, critical):
         """
@@ -302,7 +274,7 @@ class MySQLServer():
 
         else:
             self._messages['ok'].append(msg)
-        
+
 
     def _connect_master(self):
         """
@@ -310,13 +282,13 @@ class MySQLServer():
         using same credentials as for checking host
         just replacing host and port from slave status
         """
-      
+
         # Copy connection args
         master_connection = self._kwargs
         # Replacing host and port with values from slave status
         master_connection['host'] = self._mysql['slave'].get('Master_Host')
         master_connection['port'] = self._mysql['slave'].get('Master_Port')
-      
+
         try:
             self._master = MySQLServer(master_connection)
         except Exception, e:
@@ -326,7 +298,7 @@ class MySQLServer():
 
     def _diff_binlog_master_slave(self, slave_status_only=False):
         """
-        calculate byte offset between master and slave 
+        calculate byte offset between master and slave
 
         @param slave_status_only: indicate to useshow slave status is used
         @type: bool
@@ -344,7 +316,7 @@ class MySQLServer():
 
         if not slave_status_only:
             for log in self._master._master_logs():
-    
+
                if log.get('Log_name') == slave_relay_master_log_file or \
                   slave_logfile_matched:
 
@@ -388,9 +360,11 @@ class MySQLServer():
             lag_bytes = self._diff_binlog_master_slave(slave_status_only=True)
 
         return lag_bytes
-            
 
-    def check_replication(self, threshold_seconds, threshold_bytes):
+
+    def check_replication(self, threshold_seconds_warning, threshold_seconds_critical,
+                          threshold_bytes_warning, threshold_bytes_critical,
+                          ignore_readonly_warning=False):
         """
         examine the replication status of a slave
 
@@ -412,16 +386,16 @@ class MySQLServer():
             lag_bytes = self._get_replication_lag()
             perf_msg = "replication_lag_bytes={}b;{};{}"
             self._perf_data.append(perf_msg.format(lag_bytes,
-                                                   threshold_bytes.get('warning'),
-                                                   threshold_bytes.get('critical')))
+                                                   threshold_bytes_warning,
+                                                   threshold_bytes_critical))
 
             if lag_seconds is None:
                 lag_seconds = -1
 
             perf_msg = "replication_lag_seconds={}s;{};{}"
             self._perf_data.append(perf_msg.format(lag_seconds,
-                                                   threshold_seconds.get('warning'),
-                                                   threshold_seconds.get('critical')))
+                                                   threshold_seconds_warning,
+                                                   threshold_seconds_critical))
 
             if slave_sql_thread != 'Yes':
                 msg = "Replication SQL Thread is down"
@@ -437,34 +411,34 @@ class MySQLServer():
                 self._messages['critical'].append(msg)
                 self._set_state(MySQLServer.state_critical)
 
-            if read_only != 'ON':
+            if not ignore_readonly_warning and read_only != 'ON':
                 msg = "Slave is not operating in read only mode"
                 self._messages['warning'].append(msg)
                 self._set_state(MySQLServer.state_warning)
 
             msg = "Replication "\
                   "Master {}:{} "\
-                  "Slave lag {}s/{}B".format(master_host,
+                  "Slave lag {}s/{}".format(master_host,
                                              master_port,
                                              lag_seconds,
-                                             lag_bytes)
+                                             pretty_size(lag_bytes))
 
-            if lag_bytes >= threshold_bytes.get('critical'):
+            if lag_bytes >= threshold_bytes_critical:
                 self._messages['critical'].append(msg)
                 self._set_state(MySQLServer.state_critical)
 
-            elif lag_bytes >= threshold_bytes.get('warning'):
+            elif lag_bytes >= threshold_bytes_warning:
                 self._messages['warning'].append(msg)
                 self._set_state(MySQLServer.state_warning)
 
             else:
                 pass
-                   
-            if lag_seconds >= threshold_seconds.get('critical'):
+
+            if lag_seconds >= threshold_seconds_critical:
                 self._messages['critical'].append(msg)
                 self._set_state(MySQLServer.state_critical)
 
-            elif lag_seconds >= threshold_seconds.get('warning'):
+            elif lag_seconds >= threshold_seconds_warning:
                 self._messages['warning'].append(msg)
                 self._set_state(MySQLServer.state_warning)
 
@@ -472,7 +446,7 @@ class MySQLServer():
                 self._messages['ok'].append(msg)
 
 
-    def check_slave_count(self, warning, critical):
+    def check_slave_connections(self, warning, critical):
         """
         check connected slave hosts
 
@@ -503,7 +477,7 @@ class MySQLServer():
         else:
             self._messages['ok'].append(msg)
 
-     
+
     def check_user_connections(self, username, alert_level, warning, critical):
         """
         checks connected user filtered by username
@@ -528,7 +502,7 @@ class MySQLServer():
         if username:
             query += " AND User = '{}'".format(username)
 
-        user = self._run_query(query, 
+        user = self._run_query(query,
                                MYSQL_RESULT_FETCH_ONE)
 
         perf_msg = "user_connected={};{};{}"
@@ -611,7 +585,7 @@ class MySQLServer():
                    locks.append(result)
 
         else:
-            msg = "Can't find any Liquibase lock table {}"
+            msg = "Liquibase lock table {} not found"
             self._messages['warning'].append(msg.format(table))
             self._set_state(MySQLServer.state_warning)
 
@@ -640,40 +614,148 @@ class MySQLServer():
             self._messages['ok'].append(msg)
 
 
+    def check_heartbeat(self, table, column):
+        """
+        Updates unix timestamp in heartbeat table
+
+        @param table: name of the heartbeat table
+        @type: str
+        @param column: name of column to update
+        @type: str
+        """
+
+        if self._mysql['variables'].get('read_only') != 'ON':
+            msg = "Heartbeat"
+            try:
+                delete = "DELETE FROM {table}".format(table=table)
+                insert = "INSERT INTO {table}({column}) VALUES(UNIX_TIMESTAMP())"
+                insert = insert.format(table=table, column=column)
+
+                self._cursor.execute(delete)
+                self._cursor.execute(insert)
+                self._connection.commit()
+
+            except Exception as e:
+                msg = "{} failed to update unix timestamp ({})".format(msg, e[1])
+                self._messages['critical'].append(msg)
+                self._set_state(MySQLServer.state_critical)
+
+            self._messages['ok'].append(msg)
+            self._set_state(MySQLServer.state_ok)
+
+
+    def check_definer(self, targets):
+        """
+        Check for none existing definers in routines,
+        triggers, events and views
+
+        @param targets: targets to check for broken definers
+        """
+
+        broken = {x: {} for x in targets}
+
+        def add_broken(user, host, target):
+            if user in broken[target]:
+                broken[target][user].append(host)
+            else:
+                broken[target][user] = [host]
+
+        query = "SELECT User,Host FROM mysql.user"
+        users = {}
+
+        for row in self._run_query(query):
+            if row['User'] in users:
+                users[row['User']].append(row['Host'])
+            else:
+                users[row['User']] = [row['Host']]
+
+        query = "SELECT SUBSTRING_INDEX(DEFINER, '@', '1') AS User,"\
+                "SUBSTRING_INDEX(DEFINER,'@',-1) AS Host "\
+                "FROM information_schema.{} "\
+                "GROUP BY User, Host"
+
+        for target in targets:
+            for row in self._run_query(query.format(target.upper())):
+
+                if row['User'] in users:
+                    if row['Host'] not in users[row['User']]:
+                        add_broken(row['User'], row['Host'], target)
+                else:
+                    add_broken(row['User'], row['Host'], target)
+
+        msg = "Definer for {}".format('/'.join(targets))
+        self._messages['ok'].append(msg)
+
+        for target in targets:
+
+           if len(broken[target]) > 0:
+               msg = "Definer [{}] in {} is broken".format(broken[target],target)
+               self._messages['warning'].append(msg)
+               self._set_state(MySQLServer.state_warning)
+
+
     def status(self, check):
         """
         calls all check functions and generate
         the status output
-        
+
         @param check: threshold for each check command
         @returns: the exit code for icinga
         @returntype: int
         """
 
-        if check['check_replication']:
-            self.check_replication(check['replication_lag_seconds'],
-                                   check['replication_lag_bytes'])
+        if check['check_heartbeat']:
+            self.check_heartbeat(
+                table=check['heartbeat_table'],
+                column=check['heartbeat_column']
+            )
 
-        self.check_threads(**check['check_threads'])
+        if check['check_replication']:
+            self.check_replication(
+                check['replication_lag_seconds_warning'],
+                check['replication_lag_seconds_critical'],
+                check['replication_lag_bytes_warning'],
+                check['replication_lag_bytes_critical'],
+                check['replication_ignore_readonly_warning']
+            )
+
+        if check['check_threads']:
+            self.check_threads_usage(
+                warning=check['threads_warning'],
+                critical=check['threads_critical']
+            )
 
         if check['check_user_connections']:
-            self.check_user_connections(username=check['user_connections_filter'],
-                                        alert_level=check['user_connections_max_alertlevel'],
-                                        **check['user_connections'])
+            self.check_user_connections(
+                username=check['user_connections_filter'],
+                alert_level=check['user_connections_max_alertlevel'],
+                warning=check['user_connections_warning'],
+                critical=check['user_connections_critical']
+            )
 
-        self.check_connections(**check['check_connections'])
+        if check['check_connections']:
+            self.check_connections(
+                warning=check['connections_warning'],
+                critical=check['connections_critical'],
+            )
 
-        self.check_slave_count(**check['check_slave_count'])
-
-        self.check_users(**check['check_users'])
+        if check['check_slave_connections']:
+            self.check_slave_connections(
+                warning=check['slave_connections_warning'],
+                critical=check['slave_connections_critical'],
+            )
 
         if check['check_liquibase']:
             self.check_liquibase(
-                                  database=check['liquibase_database'],
-                                  table=check['liquibase_changeloglock_table'],
-                                  **check['liquibase_lock_seconds']
-                                )
-        
+                database=check['liquibase_database'],
+                table=check['liquibase_changeloglock_table'],
+                warning=check['liquibase_lock_seconds_warning'],
+                critical=check['liquibase_lock_seconds_critical']
+            )
+
+        if check['check_definer']:
+            self.check_definer(targets=check['definer_targets'])
+
         if self._state == MySQLServer.state_critical:
             self._print_status('critical')
 
@@ -698,114 +780,242 @@ def parse_cmd_args():
     parser.add_argument('-H', '--host', required=True)
     parser.add_argument('-U', '--user')
     parser.add_argument('-p','--passwd')
-    parser.add_argument('--defaults-file', 
-                        dest='read_default_file', 
-                        default='~/.my.cnf',
-                        help='Full path to my.cnf (default: ~/.my.cnf)'
-                       )
+    parser.add_argument(
+        '--defaults-file',
+        dest='read_default_file',
+        default='~/.my.cnf',
+        help='Full path to my.cnf (default: ~/.my.cnf)'
+    )
 
-    parser.add_argument('--db',
-                        default='information_schema',
-                        help='Database connect to (default: information_schema)'
-                       )
-    parser.add_argument('-P', '--port',
-                        type=int,
-                        default=3306,
-                        help='Database Port (default: 3306)'
-                       )
-    parser.add_argument('--connect-timeout',
-                        type=int,
-                        default=5,
-                        help='Database connection timeout in seconds (default: 5s)'
-                       )
+    parser.add_argument(
+        '--db',
+        default='information_schema',
+        help='Database connect to (default: information_schema)'
+    )
+    parser.add_argument(
+        '-P', '--port',
+        type=int,
+        default=3306,
+        help='Database Port (default: 3306)'
+    )
+    parser.add_argument(
+        '--connect-timeout',
+        type=int,
+        default=5,
+        help='Database connection timeout in seconds (default: 5s)'
+    )
+    parser.add_argument(
+        '--ssl-key',
+        help='Path to ssl client private key file'
+    )
+    parser.add_argument(
+        '--ssl-cert',
+        help='Path to ssl client public key certificate file'
+    )
+    parser.add_argument(
+        '--ssl-ca',
+        help='Path to ssl CA certificate file'
+    )
+    parser.add_argument(
+        '--ssl-capath',
+        help='Path to directory with trusted ssl CA certificates file'
+    )
 
-    group = parser.add_argument_group('check')
-    group.add_argument('--check-users', default='-1:-1',
-            help='warning and critical threshold '\
-                 'for connected users (float|int:float|int)')
+    group_threads = parser.add_argument_group('Thread usage check')
+    group_threads.add_argument(
+        '--check-threads',
+        action='store_true',
+        help='Enable thread check'
+    )
+    group_threads.add_argument(
+        '--threads-warning',
+        default=60,
+        type=int,
+        help='Warning threshold in percentage for concurrency thread usage (default: 60)'
+    )
+    group_threads.add_argument(
+        '--threads-critical',
+        default=95,
+        type=int,
+        help='Critical threshold in percentage for concurrency thread usage (default: 95)'
+    )
 
-    group.add_argument('--check-threads', default='60:95',
-            help='warning and critical threshold '\
-                 'in percent for concurrency thread usage (float|int:float|int)')
+    group_con = parser.add_argument_group('Connection check')
+    group_con.add_argument(
+        '--check-connections',
+        action='store_true',
+        help='Enables connection check'
+    )
+    group_con.add_argument(
+        '--connections-warning',
+        default=85,
+        type=int,
+        help='Warning threshold in percentage for connection usage (default: 85)'
+    )
+    group_con.add_argument(
+        '--connections-critical',
+        default=95,
+        help='Critical threshold in percentage for connection usage (default: 95)'
+    )
 
-    group.add_argument('--check-connections', default='85:95',
-            help='warning and critical threshold '\
-                 'in percent for connection usage (float|int:float|int)')
+    group_slave = parser.add_argument_group('Slave connection check')
+    group_slave.add_argument(
+        '--check-slave-connections',
+        action='store_true',
+        help='Enables slave connection check'
+    )
+    group_slave.add_argument(
+        '--slave-connections-warning',
+        default=-1,
+        type=int,
+        help='Warning count of connected slave hosts (default: -1)'
+    )
+    group_slave.add_argument(
+        '--slave-connections-critical',
+        default=0,
+        type=int,
+        help='critical count of connected slave hosts (default: 0)'
+    )
 
-    group.add_argument('--check-slave-count', default='-1:-1',
-            help='warning and critical count ' \
-                 'of connected slave hosts  (float|int:float|int)')
+    group_repl = parser.add_argument_group('Replication delay check')
+    group_repl.add_argument(
+        '--check-replication',
+        action='store_true',
+        help='Enable replication check'
+    )
+    group_repl.add_argument(
+        '--replication-ignore-readonly-warning',
+        action='store_true',
+        help='Ignore warning messages'\
+             'when slave is not running in readonly mode'
+    )
+    group_repl.add_argument(
+        '--replication-lag-seconds-warning',
+        default=600,
+        type=int,
+        help='Warning threshold '\
+             'in seconds for replication (default: 600)'
+    )
+    group_repl.add_argument(
+        '--replication-lag-seconds-critical',
+        default=1800,
+        type=int,
+        help='Critical threshold '\
+             'in seconds for replication (default: 1800)'
+    )
+    group_repl.add_argument(
+        '--replication-lag-bytes-warning',
+        default=52428800,
+        type=int,
+        help='Warning threshold '\
+             'in bytes for replication (default: 52428800)'
+    )
+    group_repl.add_argument(
+        '--replication-lag-bytes-critical',
+        default=104857600,
+        type=int,
+        help='Critical threshold '\
+             'in bytes for replication (default: 104857600)'
+    )
 
-    group_repl = parser.add_argument_group('replication check')
-    group_repl.add_argument('--check-replication', action='store_true',
-            help='enable replication check')
+    group_conn = parser.add_argument_group('User connection check')
+    group_conn.add_argument(
+        '--check-user-connections',
+        action='store_true',
+        help='Enable user connection check'
+    )
+    group_conn.add_argument(
+        '--user-connections-warning',
+        default=20,
+        type=int,
+        help='Warning and critical alert '\
+             'for user connections equal or below value '\
+             '(default: 20)'
+    )
+    group_conn.add_argument(
+        '--user-connections-critical',
+        default=5,
+        type=int,
+        help='Critical threshold '\
+             'for user connections equal or below value '\
+             '(default: 5)'
+    )
+    group_conn.add_argument(
+        '--user-connections-max-alertlevel',
+        default='warning',
+        choices=['warning','critical'],
+        help='Define max alert level for user connections check (default: warning)'
+    )
+    group_conn.add_argument(
+        '--user-connections-filter', default='root',
+        help='Filter connections by username (default: root)'
+    )
 
-    group_repl.add_argument('--replication-lag-seconds', default='600:1800',
-            help='warning and critical threshold '\
-                 'in seconds for replication (float|int:float|int)')
+    group_liquibase = parser.add_argument_group('Liquibase check')
+    group_liquibase.add_argument(
+        '--check-liquibase',
+        action='store_true',
+        help='Enable liquibase check'
+    )
+    group_liquibase.add_argument(
+        '--liquibase-lock-seconds-warning',
+        default=900,
+        type=int,
+        help='Warning threshold for '\
+             'lock held in seconds (default: 900)'
+    )
+    group_liquibase.add_argument(
+        '--liquibase-lock-seconds-critical',
+        default=3600,
+        type=int,
+        help='Critical threshold for '\
+             'lock held in seconds (default: 3600)'
+    )
+    group_liquibase.add_argument(
+        '--liquibase-database',
+        help='database to check for databasechangeloglock table (default: all)'
+    )
+    group_liquibase.add_argument(
+        '--liquibase-changeloglock-table',
+        default='DATABASECHANGELOGLOCK',
+        help='Table name for changeloglock table (default: DATABASECHANGELOGLOCK)'
+    )
 
-    group_repl.add_argument('--replication-lag-bytes', default='52428800:104857600',
-            help='warning and critical threshold '\
-                 'in bytes for replication (float|int:float|int)')
+    group_heartbeat = parser.add_argument_group('Heartbeat check')
+    group_heartbeat.add_argument(
+        '--check-heartbeat',
+        action='store_true',
+        help='Enable heartbeat check'
+    )
+    group_heartbeat.add_argument(
+        '--heartbeat-table',
+        default='heartbeat.heartbeat',
+        help='Name of the heartbeat table full qualified (default: heartbeat.heartbeat)'
+    )
+    group_heartbeat.add_argument(
+        '--heartbeat-column',
+        default='tz',
+        help='Name of the heartbeat column to update'
+    )
 
-    group_conn = parser.add_argument_group('user connection check')
-    group_conn.add_argument('--check-user-connections', action='store_true',
-            help='enable user connection check')
-
-    group_conn.add_argument('--user-connections', default='20:5',
-            help='warning and critical alert '\
-                 'for user connections equal or below thresholds '\
-                 '(default: warn=20, crit=5)')
-    
-    group_conn.add_argument('--user-connections-max-alertlevel', default='warning',
-            choices=['warning','critical'],
-            help='define max alert level for user connections check (default: warning)')
-
-    group_conn.add_argument('--user-connections-filter', default='root',
-            help='filter connections by username (default: root)')
-
-    group_liquibase = parser.add_argument_group('liquibase check')
-    group_liquibase.add_argument('--check-liquibase', action='store_true',
-            help='enable liquibase check')
-
-    group_liquibase.add_argument('--liquibase-lock-seconds', default='900:3600',
-            help='warning and critical threshold '\
-                 'lock held in seconds (default: warn:900 crit:3600)')
-
-    group_liquibase.add_argument('--liquibase-database',
-            help='database to check for databasechangeloglock table (default: all)')
-
-    group_liquibase.add_argument('--liquibase-changeloglock-table',
-            default='DATABASECHANGELOGLOCK',
-            help='table name for changeloglock table (default: DATABASECHANGELOGLOCK)')
-    
+    group_definer = parser.add_argument_group('Definer check')
+    group_definer.add_argument(
+        '--check-definer',
+        action='store_true',
+        help='Enable definer check'
+    )
+    group_definer.add_argument(
+        '--definer-targets',
+        type=str,
+        nargs='*',
+        default=['views','routines','triggers','events'],
+        choices=['views','routines','triggers','events'],
+        help='Check for none existing definers'
+    )
 
     args = parser.parse_args()
 
     return args
-
-
-def parse_threshold(args):
-    """
-    parses given thresholds for warning and critical,
-    values are separated by colon
-
-    @param args: warn and crit threshold
-    @type: string
-
-    @returns: warning and critical threshold
-    @returntype: dict
-    """
-
-    threshold = args.split(':')
-
-    if len(threshold) == 2:
-       return dict(warning=float(threshold[0]),
-                   critical=float(threshold[1]))
-
-    else:
-       print("Invalid threshold format. Use --check <warn>:<crit>")
-       sys.exit(-1)
 
 
 def parse_check_args(args):
@@ -821,26 +1031,44 @@ def parse_check_args(args):
     """
 
     data = {}
- 
-    data['check_threads'] = parse_threshold(args.check_threads)
 
-    data['check_slave_count'] = parse_threshold(args.check_slave_count)
-    data['check_users'] = parse_threshold(args.check_users)
-    data['check_connections'] = parse_threshold(args.check_connections)
+    data['check_threads'] = args.check_threads
+    data['threads_warning'] = args.threads_warning
+    data['threads_critical'] = args.threads_critical
+
+    data['check_slave_connections'] = args.check_slave_connections
+    data['slave_connections_warning'] = args.slave_connections_warning
+    data['slave_connections_critical'] = args.slave_connections_critical
+
+    data['check_connections'] = args.check_connections
+    data['connections_warning'] = args.connections_warning
+    data['connections_critical'] = args.connections_critical
 
     data['check_user_connections'] = args.check_user_connections
-    data['user_connections'] = parse_threshold(args.user_connections)
+    data['user_connections_warning'] = args.user_connections_warning
+    data['user_connections_critical'] = args.user_connections_critical
     data['user_connections_filter'] = args.user_connections_filter
     data['user_connections_max_alertlevel'] = args.user_connections_max_alertlevel
 
     data['check_replication'] = args.check_replication
-    data['replication_lag_seconds'] = parse_threshold(args.replication_lag_seconds)
-    data['replication_lag_bytes'] = parse_threshold(args.replication_lag_bytes)
+    data['replication_ignore_readonly_warning'] = args.replication_ignore_readonly_warning
+    data['replication_lag_seconds_warning'] = args.replication_lag_seconds_warning
+    data['replication_lag_seconds_critical'] = args.replication_lag_seconds_critical
+    data['replication_lag_bytes_warning'] = args.replication_lag_bytes_warning
+    data['replication_lag_bytes_critical'] = args.replication_lag_bytes_critical
 
     data['check_liquibase'] = args.check_liquibase
-    data['liquibase_lock_seconds'] = parse_threshold(args.liquibase_lock_seconds)
+    data['liquibase_lock_seconds_warning'] = args.liquibase_lock_seconds_warning
+    data['liquibase_lock_seconds_critical'] = args.liquibase_lock_seconds_critical
     data['liquibase_database'] = args.liquibase_database
     data['liquibase_changeloglock_table'] = args.liquibase_changeloglock_table
+
+    data['check_heartbeat'] = args.check_heartbeat
+    data['heartbeat_table'] = args.heartbeat_table
+    data['heartbeat_column'] = args.heartbeat_column
+
+    data['check_definer'] = args.check_definer
+    data['definer_targets'] = args.definer_targets
 
     return data
 
@@ -849,14 +1077,21 @@ def parse_connection_args(args):
     """
     extract all mysql connection params from args
     which don't have None values set and returns those
-    
+
     @param args: commandline arguments
     @type: argparse.Namespace
 
     @returns: dict with mysql connection params
     @returntype: dict
     """
- 
+
+    valid_ssl_params = [
+                        'ssl_key',
+                        'ssl_cert',
+                        'ssl_ca',
+                        'ssl_capath'
+                       ]
+
     valid_connection_params = [
                                'host',
                                'user',
@@ -866,13 +1101,24 @@ def parse_connection_args(args):
                                'port',
                                'connect_timeout'
                               ]
+    valid_connection_params += valid_ssl_params
+
     connection_args = {}
+    ssl = {}
 
     for arg in vars(args):
         if arg in valid_connection_params:
-           value = getattr(args, arg)
-           if value:
-              connection_args.update({arg:value})
+            value = getattr(args, arg)
+
+            if value:
+                if arg in valid_ssl_params:
+                    ssl.update({arg.lstrip('ssl_'):value})
+
+                else:
+                    connection_args.update({arg:value})
+
+    if len(ssl) > 0:
+      connection_args.update({'ssl':ssl})
 
     return connection_args
 
@@ -880,7 +1126,7 @@ def parse_connection_args(args):
 def main():
 
     args = parse_cmd_args()
-    
+
     try:
         server = MySQLServer(parse_connection_args(args))
         sys.exit(server.status(parse_check_args(args)))
