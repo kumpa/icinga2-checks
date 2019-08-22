@@ -7,8 +7,14 @@ __date__ = "15/11/2018"
 
 import argparse
 import sys
-import MySQLdb
 from math import log
+
+try:
+    import MySQLdb
+    from MySQLdb import cursors
+
+except ImportError as e:
+    import pymysql as MySQLdb
 
 
 MYSQL_HOST_NOT_ALLOWED = 1130
@@ -63,6 +69,12 @@ class MySQLServer():
         """
 
         self._kwargs = kwargs
+        extra_kwargs = {
+                        'cursorclass': MySQLdb.cursors.DictCursor,
+                        'sql_mode':'TRADITIONAL'
+                       }
+
+        self._kwargs.update(extra_kwargs)
         self._state = MySQLServer.state_ok
         self._messages = dict(ok=list(),
                               warning=list(),
@@ -75,9 +87,8 @@ class MySQLServer():
         self._master = None
 
         try:
-            self._connection = MySQLdb.connect(**kwargs)
-            self._cursor = self._connection.cursor(
-                    cursorclass=MySQLdb.cursors.DictCursor)
+            self._connection = MySQLdb.connect(**self._kwargs)
+            self._cursor = self._connection.cursor()
 
         except Exception, e:
             raise MySQLServerConnectException(e)
