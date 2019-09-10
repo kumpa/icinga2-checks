@@ -657,7 +657,7 @@ class MySQLServer():
         @type: str
         """
 
-        if self._mysql['variables'].get('read_only') != 'ON':
+        if self._mysql['variables'].get('read_only') == 'OFF' and not self._is_slave:
             msg = "Heartbeat"
             try:
                 delete = "DELETE FROM {table}".format(table=table)
