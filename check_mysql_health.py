@@ -90,7 +90,7 @@ class MySQLServer():
             self._connection = MySQLdb.connect(**self._kwargs)
             self._cursor = self._connection.cursor()
 
-        except Exception, e:
+        except Exception as e:
             raise MySQLServerConnectException(e)
 
         self._global_variables()
@@ -322,7 +322,7 @@ class MySQLServer():
 
         try:
             self._master = MySQLServer(master_connection)
-        except Exception, e:
+        except Exception as e:
             # failed open connection on master server
             pass
 
@@ -1164,7 +1164,7 @@ def main():
         server = MySQLServer(parse_connection_args(args))
         sys.exit(server.status(parse_check_args(args)))
 
-    except MySQLServerConnectException, e:
+    except MySQLServerConnectException as e:
         msg = "Database Connection failed"
         mysql_err_code = e.args[0][0]
 
