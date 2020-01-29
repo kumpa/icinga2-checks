@@ -489,7 +489,7 @@ class MySQLServer():
         @type critical: int or float
         """
 
-        if warning == -1 or critical == -1:
+        if warning == -1 and critical == -1:
             return
 
         slaves = self._slave_hosts()
