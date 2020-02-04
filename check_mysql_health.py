@@ -359,7 +359,7 @@ class MySQLServer():
         else:
             # Fallback method to estimate the byte lag
             # Assume the slave has the same setting for max_binlog_size as master
-            max_binlog_size = self._mysql['variables'].get('max_binlog_size')
+            max_binlog_size = long(self._mysql['variables'].get('max_binlog_size'))
             # Extract number from binlog file names
             master_logfile_nr = int(slave_master_log_file.split('.')[1])
             slave_logfile_nr = int(slave_relay_master_log_file.split('.')[1])
@@ -657,7 +657,7 @@ class MySQLServer():
         @type: str
         """
 
-        if self._mysql['variables'].get('read_only') == 'OFF' and not self._is_slave:
+        if self._mysql['variables'].get('read_only') != 'ON':
             msg = "Heartbeat"
             try:
                 delete = "DELETE FROM {table}".format(table=table)
