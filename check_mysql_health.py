@@ -357,17 +357,20 @@ class MySQLServer():
             lag_bytes = master_log_ahead - slave_exec_master_log_pos
 
         else:
-            # Fallback method to estimate the byte lag
-            # Assume the slave has the same setting for max_binlog_size as master
-            max_binlog_size = self._mysql['variables'].get('max_binlog_size')
-            # Extract number from binlog file names
-            master_logfile_nr = int(slave_master_log_file.split('.')[1])
-            slave_logfile_nr = int(slave_relay_master_log_file.split('.')[1])
-            # Calculate offset based on current logfile applied on slave
-            logfile_nr_offset = master_logfile_nr - slave_logfile_nr
+            try:
+                # Fallback method to estimate the byte lag
+                # Assume the slave has the same setting for max_binlog_size as master
+                max_binlog_size = long(self._mysql['variables'].get('max_binlog_size'))
+                # Extract number from binlog file names
+                master_logfile_nr = int(slave_master_log_file.split('.')[1])
+                slave_logfile_nr = int(slave_relay_master_log_file.split('.')[1])
+                # Calculate offset based on current logfile applied on slave
+                logfile_nr_offset = master_logfile_nr - slave_logfile_nr
 
-            if logfile_nr_offset > 0:
-                lag_bytes = logfile_nr_offset * max_binlog_size - (slave_exec_master_log_pos)
+                if logfile_nr_offset > 0:
+                    lag_bytes = logfile_nr_offset * max_binlog_size - (slave_exec_master_log_pos)
+            except IndexError as e:
+                lag_bytes = -1
 
         return lag_bytes
 
@@ -657,7 +660,7 @@ class MySQLServer():
         @type: str
         """
 
-        if self._mysql['variables'].get('read_only') == 'OFF' and not self._is_slave:
+        if self._mysql['variables'].get('read_only') != 'ON':
             msg = "Heartbeat"
             try:
                 delete = "DELETE FROM {table}".format(table=table)
