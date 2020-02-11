@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 __author__ = "Patrick Kummutat"
-__version__ = "0.6"
+__version__ = "0.7"
 __date__ = "15/11/2018"
 
 import argparse
@@ -660,7 +660,7 @@ class MySQLServer():
         @type: str
         """
 
-        if self._mysql['variables'].get('read_only') != 'ON':
+        if self._mysql['variables'].get('read_only') != 'ON' and not self._is_slave:
             msg = "Heartbeat"
             try:
                 delete = "DELETE FROM {table}".format(table=table)
