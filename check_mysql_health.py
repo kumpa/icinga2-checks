@@ -2,12 +2,13 @@
 # -*- coding: utf-8 -*-
 
 __author__ = "Patrick Kummutat"
-__version__ = "0.7"
+__version__ = "0.8"
 __date__ = "15/11/2018"
 
 import argparse
 import sys
 from math import log
+from datetime import datetime
 
 try:
     import MySQLdb
@@ -31,7 +32,7 @@ def pretty_size(n, pow=0, b=1024, u='B', pre=[''] + [p+'i'for p in'KMGTPEZY']):
     return "%%.%if %%s%%s"%abs(pow%(-pow-1))%(n/b**float(pow), pre[pow], u)
 
 
-def pretty_time(seconds):
+def pretty_time(seconds, long_format=False):
     sign_string = '-' if seconds < 0 else ''
     seconds = abs(int(seconds))
     days, seconds = divmod(seconds, 86400)
@@ -39,15 +40,27 @@ def pretty_time(seconds):
     minutes, seconds = divmod(seconds, 60)
 
     if days > 0:
+        if long_format:
+            return '%s%d days %d hours %d minutes %d seconds' % (sign_string, days, hours, minutes, seconds)
+
         return '%s%dd%dh%dm%ds' % (sign_string, days, hours, minutes, seconds)
 
     elif hours > 0:
+        if long_format:
+            return '%s%d hours %d minutes %d seconds' % (sign_string, hours, minutes, seconds)
+
         return '%s%dh%dm%ds' % (sign_string, hours, minutes, seconds)
 
     elif minutes > 0:
+        if long_format:
+            return '%s%d minutes %d seconds' % (sign_string, minutes, seconds)
+
         return '%s%dm%ds' % (sign_string, minutes, seconds)
 
     else:
+        if long_format:
+            return '%s%d seconds' % (sign_string, seconds)
+
         return '%s%ds' % (sign_string, seconds)
 
 
@@ -146,7 +159,10 @@ class MySQLServer():
         @type: string
         """
 
-        msg = "Ok Database Health"
+        db_version = "{} - {}".format(self._mysql['variables'].get('version'),
+                                      self._mysql['variables'].get('version_comment'))
+
+        msg = "Ok Database Health ({})".format(db_version)
         if level == 'ok':
             print(msg)
 
@@ -730,6 +746,40 @@ class MySQLServer():
                self._set_state(MySQLServer.state_warning)
 
 
+    def check_ssl_certificate(self, warning, critical):
+        """
+        checks ssl certificate expiration date
+
+        @param warning: warning threshold in hours
+        @type: int
+        @param critical: critical threshold in hours
+        @type: int
+        """
+
+        expire_date = self._mysql['status'].get('Ssl_server_not_after')
+        if expire_date:
+            # Format 'Jun 26 12:25:31 2020 GMT'
+            delta = datetime.strptime(expire_date, '%b %d %H:%M:%S %Y %Z') - datetime.now()
+            delta_hours = int(delta.total_seconds()/60/60)
+
+
+            self._perf_data.append("ssl_certificate_expires={};{};{}".format(delta_hours,
+                                                                             warning,
+                                                                             critical))
+            msg = "SSL Certificate expires in {}".format(pretty_time(delta.total_seconds(), long_format=True))
+
+            if delta_hours <= critical:
+                self._messages['critical'].append(msg)
+                self._set_state(MySQLServer.state_critical)
+
+            elif delta_hours <= warning:
+                self._messages['warning'].append(msg)
+                self._set_state(MySQLServer.state_warning)
+
+            else:
+                self._messages['ok'].append(msg)
+
+
     def status(self, check):
         """
         calls all check functions and generate
@@ -791,6 +841,12 @@ class MySQLServer():
 
         if check['check_definer']:
             self.check_definer(targets=check['definer_targets'])
+
+        if check['check_ssl_certificate']:
+            self.check_ssl_certificate(
+                warning=check['ssl_expire_certificate_warning'],
+                critical=check['ssl_expire_certificate_critical']
+            )
 
         if self._state == MySQLServer.state_critical:
             self._print_status('critical')
@@ -1049,6 +1105,26 @@ def parse_cmd_args():
         help='Check for none existing definers'
     )
 
+    group_ssl = parser.add_argument_group('SSL check')
+    group_ssl.add_argument(
+        '--check-ssl-certificate',
+        action='store_true',
+        help='Enable ssl certificate check'
+    )
+    group_ssl.add_argument(
+        '--ssl-expire-certificate-warning',
+        default=240,
+        type=int,
+        help='Warning threshold for '\
+             'ssl certificate expiration in hours (default: 240h)'
+    )
+    group_ssl.add_argument(
+        '--ssl-expire-certificate-critical',
+        default=72,
+        type=int,
+        help='Critical threshold for '\
+             'ssl certificate expiration in hours (default: 72h)'
+    )
     args = parser.parse_args()
 
     return args
@@ -1105,6 +1181,10 @@ def parse_check_args(args):
 
     data['check_definer'] = args.check_definer
     data['definer_targets'] = args.definer_targets
+
+    data['check_ssl_certificate'] = args.check_ssl_certificate
+    data['ssl_expire_certificate_warning'] = args.ssl_expire_certificate_warning
+    data['ssl_expire_certificate_critical'] = args.ssl_expire_certificate_critical
 
     return data
 
